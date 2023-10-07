@@ -18,6 +18,19 @@ const ApiGetTopology = "/api/topology/graph"
 const ApiGetEquipment = "/api/equipment"
 const ApiTimeoutSec = 60
 
+// Resource Types
+const (
+	ResourceTypeIsNotDefine      int = 0
+	ResourceTypeMeasure          int = 1
+	ResourceTypeState            int = 2
+	ResourceTypeControl          int = 3
+	ResourceTypeProtect          int = 4
+	ResourceTypeLink             int = 5
+	ResourceTypeChangeSetGroup   int = 6
+	ResourceTypeReclosing        int = 7
+	ResourceTypeStateLineSegment int = 8
+)
+
 type EdgeStruct struct {
 	EquipmentType           string `json:"equipment_type,omitempty"`
 	EquipmentName           string `json:"equipment_name,omitempty"`
@@ -61,16 +74,30 @@ type EquipmentStruct struct {
 	} `json:"resource,omitempty"`
 }
 
-type ThisService struct {
-	config                   configuration.Configuration
-	topologyProfile          *TopologyStruct
-	equipmentFromEquipmentId map[int]EquipmentStruct
+type ResourceStruct struct {
+	equipmentId    int
+	resourceTypeId int
 }
 
-// New grid Losses service
+type ThisService struct {
+	config                                configuration.Configuration
+	topologyProfile                       *TopologyStruct
+	equipmentFromEquipmentId              map[int]EquipmentStruct
+	pointNameFromPointId                  map[uint64]string
+	resourceStructFromPointId             map[uint64]ResourceStruct
+	pointFromEquipmentIdAndResourceTypeId map[int]map[int]uint64
+	equipmentIdArrayFromResourceTypeId    map[int][]int
+	numberOfCBCheckingLink                int
+}
+
+// NewService grid Losses service
 func NewService() *ThisService {
 	return &ThisService{
-		equipmentFromEquipmentId: make(map[int]EquipmentStruct),
+		equipmentFromEquipmentId:              make(map[int]EquipmentStruct),
+		pointNameFromPointId:                  make(map[uint64]string),
+		resourceStructFromPointId:             make(map[uint64]ResourceStruct),
+		pointFromEquipmentIdAndResourceTypeId: make(map[int]map[int]uint64),
+		equipmentIdArrayFromResourceTypeId:    make(map[int][]int),
 	}
 }
 
@@ -266,6 +293,39 @@ func (s *ThisService) LoadEquipmentProfile(timeoutSec time.Duration, isLoadFromC
 	return resultErr
 }
 
+func (s *ThisService) CreateInternalParametersFromProfiles() {
+	for _, equipment := range s.equipmentFromEquipmentId {
+		for _, resource := range equipment.Resource {
+			if resource.TypeId == ResourceTypeProtect ||
+				resource.TypeId == ResourceTypeReclosing ||
+				resource.TypeId == ResourceTypeState ||
+				resource.TypeId == ResourceTypeStateLineSegment ||
+				resource.TypeId == ResourceTypeLink {
+
+				s.pointNameFromPointId[resource.PointId] = resource.Point
+
+				s.resourceStructFromPointId[resource.PointId] = ResourceStruct{
+					equipmentId:    equipment.Id,
+					resourceTypeId: resource.TypeId,
+				}
+
+				if _, exists := s.pointFromEquipmentIdAndResourceTypeId[equipment.Id]; !exists {
+					s.pointFromEquipmentIdAndResourceTypeId[equipment.Id] = make(map[int]uint64)
+				}
+				s.pointFromEquipmentIdAndResourceTypeId[equipment.Id][resource.TypeId] = resource.PointId
+
+				if resource.TypeId == ResourceTypeLink {
+					s.numberOfCBCheckingLink += 1
+				}
+			}
+			if _, exists := s.equipmentIdArrayFromResourceTypeId[resource.TypeId]; !exists {
+				s.equipmentIdArrayFromResourceTypeId[resource.TypeId] = make([]int, 0)
+			}
+			s.equipmentIdArrayFromResourceTypeId[resource.TypeId] = append(s.equipmentIdArrayFromResourceTypeId[resource.TypeId], equipment.Id)
+		}
+	}
+}
+
 func main() {
 
 	s := NewService()
@@ -308,5 +368,7 @@ func main() {
 	if err = s.LoadEquipmentProfile(time.Second*ApiTimeoutSec, isLoadFromCache, "cache/flisr-equipment.json"); err != nil {
 		llog.Logger.Fatalf("Failed to load equipment profile: %v", err)
 	}
+
+	s.CreateInternalParametersFromProfiles()
 
 }
