@@ -19,3 +19,12 @@
 
 # Go workspace file
 go.work
+
+.idea/
+cache/
+
+*.yml
+grid_loses
+.DS_Store
+.env
+
