@@ -8,7 +8,10 @@ import (
 	"github.com/PVKonovalov/localcache"
 	"grid_losses/configuration"
 	"grid_losses/llog"
+	"grid_losses/topogrid"
+	"grid_losses/types"
 	"grid_losses/webapi"
+	"grid_losses/zmq_bus"
 	"os"
 	"strings"
 	"time"
@@ -88,6 +91,10 @@ type ThisService struct {
 	pointFromEquipmentIdAndResourceTypeId map[int]map[int]uint64
 	equipmentIdArrayFromResourceTypeId    map[int][]int
 	numberOfCBCheckingLink                int
+	topologyFlisr                         *topogrid.TopologyGridStruct
+	topologyGrid                          *topogrid.TopologyGridStruct
+	zmq                                   *zmq_bus.ZmqBus
+	inputDataQueue                        chan types.RtdbMessage
 }
 
 // NewService grid Losses service
@@ -326,6 +333,56 @@ func (s *ThisService) CreateInternalParametersFromProfiles() {
 	}
 }
 
+func (s *ThisService) LoadTopologyGrid() error {
+	s.topologyFlisr = topogrid.New(len(s.topologyProfile.Node))
+
+	for _, node := range s.topologyProfile.Node {
+		s.topologyFlisr.AddNode(node.Id, node.EquipmentId, node.EquipmentTypeId, node.EquipmentName)
+	}
+
+	for _, edge := range s.topologyProfile.Edge {
+		if err := s.topologyFlisr.AddEdge(edge.Id, edge.Terminal1, edge.Terminal2, edge.StateNormal, edge.EquipmentId, edge.EquipmentTypeId, edge.EquipmentName); err != nil {
+			return err
+		}
+	}
+
+	s.topologyGrid = topogrid.New(len(s.topologyProfile.Node))
+
+	for _, node := range s.topologyProfile.Node {
+		s.topologyGrid.AddNode(node.Id, node.EquipmentId, node.EquipmentTypeId, node.EquipmentName)
+	}
+
+	for _, edge := range s.topologyProfile.Edge {
+		if err := s.topologyGrid.AddEdge(edge.Id, edge.Terminal1, edge.Terminal2, edge.StateNormal, edge.EquipmentId, edge.EquipmentTypeId, edge.EquipmentName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *ThisService) ZmqReceiveDataHandler(msg []string) {
+	for _, data := range msg {
+		_message, err := types.ParseScadaRtdbData([]byte(data))
+		if err != nil {
+			llog.Logger.Errorf("Failed to parse incoming data (%s): %v", data, err)
+			continue
+		}
+		for _, point := range _message {
+			if _, exists := s.resourceStructFromPointId[point.Id]; exists {
+				s.inputDataQueue <- point
+			}
+		}
+	}
+}
+
+func (s *ThisService) ReceiveDataWorker() {
+	for point := range s.inputDataQueue {
+		resource := s.resourceStructFromPointId[point.Id]
+
+		llog.Logger.Debugf("%+v", resource)
+	}
+}
+
 func main() {
 
 	s := NewService()
@@ -371,4 +428,32 @@ func main() {
 
 	s.CreateInternalParametersFromProfiles()
 
+	s.inputDataQueue = make(chan types.RtdbMessage, s.config.GridLosses.QueueLength)
+
+	if err = s.LoadTopologyGrid(); err != nil {
+		llog.Logger.Fatalf("Failed to load topology: %v", err)
+	}
+
+	if s.zmq, err = zmq_bus.New(1, 1); err != nil {
+		llog.Logger.Fatalf("Failed to create zmq context: %v", err)
+	}
+
+	var subscriberIdx int
+	if subscriberIdx, err = s.zmq.AddSubscriber(s.config.Rtdb.Output); err != nil {
+		llog.Logger.Fatalf("Failed to add zmq subscriber [%s]: %v", s.config.Rtdb.Output, err)
+	}
+
+	s.zmq.SetReceiveHandler(subscriberIdx, s.ZmqReceiveDataHandler)
+
+	if _, err = s.zmq.AddPublisher(s.config.Rtdb.Input); err != nil {
+		llog.Logger.Fatalf("Failed to add zmq event publisher [%s]: %v", s.config.Rtdb.Input, err)
+	}
+
+	go s.ReceiveDataWorker()
+
+	llog.Logger.Infof("Started")
+
+	err = s.zmq.WaitingLoop()
+
+	llog.Logger.Errorf("Stopped: %v", err)
 }
