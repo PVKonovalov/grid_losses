@@ -95,6 +95,7 @@ type ThisService struct {
 	topologyGrid                          *topogrid.TopologyGridStruct
 	zmq                                   *zmq_bus.ZmqBus
 	inputDataQueue                        chan types.RtdbMessage
+	outputDataQueue                       chan types.RtdbMessage
 }
 
 // NewService grid Losses service
@@ -383,6 +384,22 @@ func (s *ThisService) ReceiveDataWorker() {
 	}
 }
 
+func (s *ThisService) OutputEventWorker() {
+
+	for event := range s.outputDataQueue {
+
+		data, err := json.Marshal([]types.RtdbMessage{event})
+		if err != nil {
+			llog.Logger.Fatalf("Failed to marshal (%+v): %v", event, err)
+		}
+
+		_, err = s.zmq.Send(0, data)
+		if err != nil {
+			llog.Logger.Fatalf("Failed to send event (%+v): %v", event, err)
+		}
+	}
+}
+
 func main() {
 
 	s := NewService()
@@ -429,6 +446,7 @@ func main() {
 	s.CreateInternalParametersFromProfiles()
 
 	s.inputDataQueue = make(chan types.RtdbMessage, s.config.GridLosses.QueueLength)
+	s.outputDataQueue = make(chan types.RtdbMessage, s.config.GridLosses.QueueLength)
 
 	if err = s.LoadTopologyGrid(); err != nil {
 		llog.Logger.Fatalf("Failed to load topology: %v", err)
