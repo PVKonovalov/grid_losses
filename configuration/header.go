@@ -15,5 +15,12 @@ type Configuration struct {
 		LogLevel    string `yaml:"log" env:"true"`
 		QueueLength int    `yaml:"queue"`
 		ApiPrefix   string `yaml:"api_prefix"`
+		Losses      []struct {
+			Equipment int    `yaml:"equipment"`
+			VoltageAc uint64 `yaml:"voltage_ac"`
+			CurrentA  uint64 `yaml:"current_a"`
+			CosPhi    uint64 `yaml:"cos_phi"`
+			State     uint64 `yaml:"state"`
+		} `yaml:"losses"`
 	} `yaml:"grid_losses"`
 }

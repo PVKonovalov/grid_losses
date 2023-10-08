@@ -96,6 +96,7 @@ type ThisService struct {
 	zmq                                   *zmq_bus.ZmqBus
 	inputDataQueue                        chan types.RtdbMessage
 	outputDataQueue                       chan types.RtdbMessage
+	switchDataQueue                       chan types.RtdbMessage
 }
 
 // NewService grid Losses service
@@ -304,11 +305,8 @@ func (s *ThisService) LoadEquipmentProfile(timeoutSec time.Duration, isLoadFromC
 func (s *ThisService) CreateInternalParametersFromProfiles() {
 	for _, equipment := range s.equipmentFromEquipmentId {
 		for _, resource := range equipment.Resource {
-			if resource.TypeId == ResourceTypeProtect ||
-				resource.TypeId == ResourceTypeReclosing ||
-				resource.TypeId == ResourceTypeState ||
-				resource.TypeId == ResourceTypeStateLineSegment ||
-				resource.TypeId == ResourceTypeLink {
+			if resource.TypeId == ResourceTypeMeasure ||
+				resource.TypeId == ResourceTypeState {
 
 				s.pointNameFromPointId[resource.PointId] = resource.Point
 
@@ -378,9 +376,22 @@ func (s *ThisService) ZmqReceiveDataHandler(msg []string) {
 
 func (s *ThisService) ReceiveDataWorker() {
 	for point := range s.inputDataQueue {
-		resource := s.resourceStructFromPointId[point.Id]
+		if resource, exists := s.resourceStructFromPointId[point.Id]; exists {
+			switch resource.resourceTypeId {
+			case ResourceTypeState:
+				llog.Logger.Debugf("Toggle: %+v", point)
 
-		llog.Logger.Debugf("%+v", resource)
+				if err := s.topologyGrid.SetSwitchStateByEquipmentId(resource.equipmentId, int(point.Value)); err != nil {
+					llog.Logger.Warnf("Failed to change state: %v", err)
+					continue
+				}
+
+				s.topologyGrid.SetEquipmentElectricalState()
+
+			case ResourceTypeMeasure:
+				llog.Logger.Debugf("Measure: %+v", point)
+			}
+		}
 	}
 }
 
@@ -447,6 +458,7 @@ func main() {
 
 	s.inputDataQueue = make(chan types.RtdbMessage, s.config.GridLosses.QueueLength)
 	s.outputDataQueue = make(chan types.RtdbMessage, s.config.GridLosses.QueueLength)
+	s.switchDataQueue = make(chan types.RtdbMessage, s.config.GridLosses.QueueLength)
 
 	if err = s.LoadTopologyGrid(); err != nil {
 		llog.Logger.Fatalf("Failed to load topology: %v", err)
